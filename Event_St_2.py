@@ -1,118 +1,179 @@
 import streamlit as st
 import pandas as pd
+import qrcode
+from PIL import Image
+import uuid
 import os
 from datetime import datetime
 
-# ================== 配置区 ==================
-DATA_FILE = "party_activity.csv"
-VIEWER_PASSWORD = "123456"  # 查看和管理数据的密码（建议后续用 st.secrets）
+# -----------------------------
+# 配置与初始化
+# -----------------------------
 
-# ================== 数据读写函数（防乱码）==================
-def load_data():
-    if os.path.exists(DATA_FILE):
-        return pd.read_csv(DATA_FILE, encoding='utf-8-sig')
-    else:
-        return pd.DataFrame(columns=["姓名", "所属部门", "交通方式", "提交时间"])
+# 参赛者列表
+participants = [
+    {"编号": 1, "姓名": "张罡铭"},
+    {"编号": 2, "姓名": "王小波"},
+    {"编号": 3, "姓名": "胡梅"},
+    {"编号": 4, "姓名": "陈宇"},
+    {"编号": 5, "姓名": "谌淼"},
+    {"编号": 6, "姓名": "杨强"},
+    {"编号": 7, "姓名": "古棋元"},
+    {"编号": 8, "姓名": "陈鑫"},
+    {"编号": 9, "姓名": "朱虹润"},
+    {"编号": 10, "姓名": "文钰"},
+    {"编号": 11, "姓名": "李俊橙"},
+    {"编号": 12, "姓名": "董余"},
+    {"编号": 13, "姓名": "付勇"},
+    {"编号": 14, "姓名": "胡佳佳"},
+    {"编号": 15, "姓名": "黄荆荣"},
+    {"编号": 16, "姓名": "李治兴"},
+]
 
-def save_data(df):
-    df.to_csv(DATA_FILE, index=False, encoding='utf-8-sig')
+# 评分权重
+weights = {
+    "内容契合度": 25,
+    "语言表达": 20,
+    "情感表现": 20,
+    "朗诵技巧": 15,
+    "台风形象": 10,
+    "原创/创意": 10,
+}
 
-# ================== 确保数据文件存在 ==================
-if not os.path.exists(DATA_FILE):
-    df_init = pd.DataFrame(columns=["姓名", "所属部门", "交通方式", "提交时间"])
-    save_data(df_init)
+# 创建必要目录
+os.makedirs("qr_codes", exist_ok=True)
 
-# ================== 页面标题 ==================
-st.title("📊 技术党支部实践活动参与统计")
-
-# ================== 填写表单区域（所有人可见，无需密码）==================
-st.subheader("📝 请参与党员填写信息")
-
-# 加载当前数据（用于防重）
-df = load_data()
-existing_names = df["姓名"].str.strip().tolist()
-
-with st.form(key="participant_form", clear_on_submit=True):
-    name = st.text_input("姓名", placeholder="请输入您的真实姓名")
-    department = st.text_input("所属部门", placeholder="例如：前端组、后端组")
-    transport = st.radio("交通方式", ["自行驾车", "乘坐统一交通工具"])
-    submitted = st.form_submit_button("提交")
-
-if submitted:
-    name_clean = name.strip()
-    dept_clean = department.strip()
-
-    if not name_clean or not dept_clean:
-        st.error("姓名和所属部门不能为空！")
-    elif name_clean in existing_names:
-        st.warning(f"⚠️ {name_clean} 已提交过，不可重复填写！")
-    else:
-        new_record = pd.DataFrame([{
-            "姓名": name_clean,
-            "所属部门": dept_clean,
-            "交通方式": transport,
-            "提交时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        }])
-        df_updated = pd.concat([df, new_record], ignore_index=True)
-        save_data(df_updated)
-        st.success(f"✅ 提交成功！感谢 {name_clean} 的参与！")
-        st.balloons()
-        st.rerun()  # 刷新以更新数据
-
-st.markdown("---")
-
-# ================== 查看与管理区域（需密码）==================
-st.subheader("🔐 查看与管理参与情况（需登录）")
-
-# 使用 session_state 保存登录状态
-if 'view_authenticated' not in st.session_state:
-    st.session_state.view_authenticated = False
-
-if not st.session_state.view_authenticated:
-    pwd = st.text_input("请输入查看密码", type="password")
-    if st.button("验证密码"):
-        if pwd == VIEWER_PASSWORD:
-            st.session_state.view_authenticated = True
-            st.success("密码正确，正在加载数据...")
-            st.rerun()
-        else:
-            st.error("密码错误！")
+# 加载已有评分数据
+if os.path.exists("scores.csv"):
+    scores = pd.read_csv("scores.csv")
 else:
-    st.success("✅ 已登录，可查看和管理数据")
+    scores = pd.DataFrame(columns=["评委ID", "编号", "姓名"] + list(weights.keys()) + ["总分"])
 
-    # 显示当前数据
-    df = load_data()
-    st.write(f"📊 当前共 {len(df)} 人参与")
+# -----------------------------
+# 页面主函数
+# -----------------------------
 
-    if len(df) == 0:
-        st.info("暂无提交记录")
+def main():
+    st.title("🎙️ 技术党支部朗诵活动打分表（匿名评分）")
+
+    # 初始化匿名评委ID
+    if "judge_id" not in st.session_state:
+        st.session_state.judge_id = f"J{uuid.uuid4().hex[:6].upper()}"
+
+    judge_id = st.session_state.judge_id
+
+    # 生成二维码链接（带上 judge_id 参数）
+    current_url = f"http://localhost:8501?judge_id={judge_id}"
+    
+    # 显示二维码
+    st.subheader("📱 扫码开始打分")
+    st.write("请使用微信扫描下方二维码，进入匿名打分页面。")
+    generate_qr_code(judge_id, current_url)
+
+    # 打分表单
+    show_scoring_form(judge_id)
+
+    # 显示当前评分汇总（可选：管理员查看）
+    st.markdown("---")
+    display_scores_summary()
+
+# -----------------------------
+# 生成二维码
+# -----------------------------
+
+def generate_qr_code(judge_id, url):
+    img_path = f"qr_codes/{judge_id}.png"
+
+    # 仅生成一次
+    if not os.path.exists(img_path):
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=4,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        img.save(img_path)
+
+    # 显示二维码
+    st.image(img_path, caption="微信扫码进入打分页面", use_container_width=True)
+
+# -----------------------------
+# 打分表单
+# -----------------------------
+
+def show_scoring_form(judge_id):
+    global scores
+
+    # 防止重复提交
+    if f"submitted_{judge_id}" in st.session_state:
+        st.info("✅ 您的评分已提交，不可重复提交。")
+        return
+
+    st.subheader("📝 请为每位参赛者打分")
+
+    new_scores = []
+
+    with st.form(key=f"scoring_form_{judge_id}"):
+        for participant in participants:
+            st.markdown(f"### 🎤 参赛者：{participant['姓名']} (编号: {participant['编号']})")
+
+            score_row = {
+                "评委ID": judge_id,  # 可选：用于防止重复，不展示给任何人
+                "编号": participant["编号"],
+                "姓名": participant["姓名"],
+            }
+
+            total = 0
+            cols = st.columns(len(weights))
+            for i, (category, max_score) in enumerate(weights.items()):
+                with cols[i]:
+                    score = st.slider(
+                        f"{category}",
+                        0, max_score,
+                        key=f"{judge_id}_{participant['编号']}_{category}"
+                    )
+                    score_row[category] = score
+                    total += score
+
+            score_row["总分"] = total
+            new_scores.append(score_row)
+
+        submitted = st.form_submit_button("📤 提交评分")
+
+        if submitted:
+            new_df = pd.DataFrame(new_scores)
+            global scores
+            scores = pd.concat([scores, new_df], ignore_index=True)
+            save_scores(scores)
+            st.session_state[f"submitted_{judge_id}"] = True
+            st.success("🎉 感谢您的评分！")
+
+# -----------------------------
+# 显示评分汇总（可选：仅管理员可见）
+# -----------------------------
+
+def display_scores_summary():
+    st.subheader("📊 当前评分汇总（匿名）")
+    if scores.empty:
+        st.info("📭 暂无评分数据")
     else:
-        # 显示每条记录，并提供删除按钮
-        st.write("### 参与名单（点击可删除）")
-        for index, row in df.iterrows():
-            col1, col2, col3 = st.columns([3, 3, 1])
-            col1.write(f"**{row['姓名']}**")
-            col2.write(f"{row['所属部门']} | {row['交通方式']}")
-            if col3.button("🗑️ 删除", key=f"del_{index}"):
-                df = df.drop(index).reset_index(drop=True)
-                save_data(df)
-                st.success(f"已删除 {row['姓名']} 的记录")
-                st.rerun()  # 实时刷新
+        # 展示时不显示评委ID（完全匿名）
+        display_df = scores.drop(columns=["评委ID"], errors='ignore')
+        st.dataframe(display_df, use_container_width=True)
 
-    # 导出功能（可选）
-    if st.button("📤 导出数据为 CSV"):
-        tmp_df = df.copy()
-        tmp_df.to_csv("导出_活动参与统计.csv", index=False, encoding='utf-8-sig')
-        with open("导出_活动参与统计.csv", "r", encoding='utf-8-sig') as f:
-            st.download_button(
-                "⬇️ 下载文件",
-                f.read(),
-                "党支部活动参与统计.csv",
-                "text/csv",
-                key='download-csv'
-            )
+# -----------------------------
+# 保存评分数据
+# -----------------------------
 
-    # 登出按钮
-    if st.button("🔚 退出登录"):
-        st.session_state.view_authenticated = False
-        st.rerun()
+def save_scores(df):
+    df.to_csv("scores.csv", index=False)
+
+# -----------------------------
+# 启动应用
+# -----------------------------
+
+if __name__ == "__main__":
+    main()
