@@ -1,9 +1,10 @@
 import streamlit as st
 import pandas as pd
 import os
+import hashlib
 
 # -----------------------------
-# 配置与初始化
+# 配置
 # -----------------------------
 
 # 参赛者列表
@@ -26,7 +27,7 @@ participants = [
     {"编号": 16, "姓名": "李治兴"},
 ]
 
-# 评分权重（最大分值）
+# 评分权重
 weights = {
     "内容契合度": 25,
     "语言表达": 20,
@@ -42,18 +43,41 @@ MAX_TOTAL = sum(weights.values())  # 100 分
 # 评分数据文件
 SCORES_FILE = "scores.csv"
 
-# 加载已有评分数据
-if os.path.exists(SCORES_FILE):
-    all_scores = pd.read_csv(SCORES_FILE)
-else:
-    all_scores = pd.DataFrame(columns=["评委ID", "编号", "姓名"] + list(weights.keys()) + ["总分"])
+# 发布者密码（建议修改为更安全的密码）
+PUBLISHER_PASSWORD = "admin123"  # ← 请修改为你的密码
 
-# 初始化 session_state
+# -----------------------------
+# 工具函数
+# -----------------------------
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+def load_scores():
+    if os.path.exists(SCORES_FILE):
+        return pd.read_csv(SCORES_FILE)
+    else:
+        return pd.DataFrame(columns=["评委ID", "编号", "姓名"] + list(weights.keys()) + ["总分"])
+
+def save_scores(df):
+    df.to_csv(SCORES_FILE, index=False)
+
+def clear_scores():
+    if os.path.exists(SCORES_FILE):
+        os.remove(SCORES_FILE)
+
+# -----------------------------
+# 初始化状态
+# -----------------------------
+
 if "submitted" not in st.session_state:
     st.session_state.submitted = False
 
 if "judge_id" not in st.session_state:
-    st.session_state.judge_id = f"J{len(all_scores['评委ID'].unique()) + 1:03d}"
+    st.session_state.judge_id = f"J{len(load_scores()['评委ID'].unique()) + 1:03d}"
+
+# 加载评分数据
+all_scores = load_scores()
 
 # -----------------------------
 # 页面主函数
@@ -62,18 +86,46 @@ if "judge_id" not in st.session_state:
 def main():
     st.title("🎙️ 技术党支部朗诵活动打分表（匿名在线评分）")
 
-    # 显示当前评委状态
+    # 显示评分入口
     if st.session_state.submitted:
         st.success("✅ 感谢您的评分！您已成功提交，不可重复提交。")
     else:
         show_scoring_form()
 
-    # 显示最终得分
-    st.markdown("---")
-    display_final_scores()
+    # 管理区：发布者登录
+    st.sidebar.title("🔐 发布者管理")
+    pwd = st.sidebar.text_input("请输入发布者密码", type="password")
+    
+    if st.sidebar.button("登录"):
+        if hash_password(pwd) == hash_password(PUBLISHER_PASSWORD):
+            st.session_state.publisher_logged_in = True
+            st.sidebar.success("登录成功！")
+        else:
+            st.sidebar.error("密码错误")
+
+    # 发布者功能（仅登录后可见）
+    if st.session_state.get("publisher_logged_in", False):
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🎯 管理功能")
+
+        # 显示统计
+        st.sidebar.write(f"✅ 已收到 {len(all_scores['评委ID'].unique())} 份评分")
+        st.sidebar.write(f"🎯 共 {len(participants)} 位参赛者")
+
+        # 一键清除
+        if st.sidebar.button("🗑️ 一键清除所有评分"):
+            clear_scores()
+            st.session_state.submitted = False
+            st.session_state.publisher_logged_in = False
+            st.cache_data.clear()
+            st.sidebar.success("✅ 所有评分已清除，可重新开始")
+            st.experimental_rerun()  # 重新加载页面
+
+        # 显示最终得分
+        display_final_scores_publisher()
 
 # -----------------------------
-# 打分表单（带分值限制和提示）
+# 评委打分表单
 # -----------------------------
 
 def show_scoring_form():
@@ -110,44 +162,40 @@ def show_scoring_form():
 
                 score_row["总分"] = total
 
-            # 显示该选手预估总分
             st.caption(f"✅ {participant['姓名']} 当前总分：{total} / {MAX_TOTAL}")
-
             new_scores.append(score_row)
 
         submitted = st.form_submit_button("📤 提交所有评分")
 
         if submitted:
-            # ✅ 后端二次校验（防前端篡改）
-            valid = True
+            # 后端校验
             for row in new_scores:
                 for category, max_score in weights.items():
                     if not (0 <= row[category] <= max_score):
                         st.error(f"❌ {category} 分数超出范围（应为 0~{max_score}）")
-                        valid = False
-            if not valid:
-                st.stop()
+                        return
 
             # 保存评分
             new_df = pd.DataFrame(new_scores)
             global all_scores
             all_scores = pd.concat([all_scores, new_df], ignore_index=True)
-            all_scores.to_csv(SCORES_FILE, index=False)
+            save_scores(all_scores)
             st.session_state.submitted = True
             st.success("🎉 感谢您的评分！数据已提交。")
 
 # -----------------------------
-# 显示最终得分（平均总分）
+# 发布者查看最终得分
 # -----------------------------
 
-def display_final_scores():
-    st.subheader("📊 参赛者最终得分（平均总分）")
+def display_final_scores_publisher():
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📊 最终得分（仅发布者可见）")
 
     if all_scores.empty:
-        st.info("📭 暂无评分数据")
+        st.sidebar.info("📭 暂无评分数据")
         return
 
-    # 计算每位参赛者的平均总分
+    # 计算平均分
     final_scores = all_scores.groupby(["编号", "姓名"])["总分"].agg(
         平均分=("mean"),
         评委人数=("count"),
@@ -155,14 +203,22 @@ def display_final_scores():
         最低分=("min")
     ).round(2).reset_index()
 
-    # 排名
     final_scores = final_scores.sort_values(by="平均分", ascending=False).reset_index(drop=True)
     final_scores.insert(0, "排名", final_scores.index + 1)
 
-    st.dataframe(final_scores, use_container_width=True)
+    st.sidebar.dataframe(final_scores, use_container_width=True)
 
-    # 柱状图
-    st.bar_chart(final_scores.set_index("姓名")["平均分"])
+    # 图表
+    st.sidebar.bar_chart(final_scores.set_index("姓名")["平均分"])
+
+    # 可选：导出数据
+    if st.sidebar.download_button(
+        "💾 导出评分数据 (CSV)",
+        all_scores.to_csv(index=False),
+        "朗诵比赛评分数据.csv",
+        "text/csv"
+    ):
+        st.sidebar.success("导出成功")
 
 # -----------------------------
 # 启动应用
