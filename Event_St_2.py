@@ -28,7 +28,7 @@ weights = {
 
 MAX_TOTAL = sum(weights.values())
 SCORES_FILE = "scores.csv"
-PUBLISHER_PASSWORD = "admin123"  # ← 请修改为你的密码
+PUBLISHER_PASSWORD = "admin123"  # ← 请务必修改
 
 # -----------------------------
 # 工具函数
@@ -55,11 +55,11 @@ def clear_scores():
     if os.path.exists(SCORES_FILE):
         os.remove(SCORES_FILE)
 
-# ✅ 生成设备唯一ID（基于 session + IP + User-Agent）
+# ✅ 获取设备指纹（使用 session_state 持久化唯一ID）
 def get_device_id():
-    # 获取 session_id（持久化在 session 中）
-    if "device_fingerprint" not in st.session_state:
-        st.session_state.device_fingerprint = str(uuid.uuid4())
+    # 强制在 session_state 中生成并保存唯一ID
+    if "unique_device_id" not in st.session_state:
+        st.session_state.unique_device_id = str(uuid.uuid4())
     
     try:
         ip = st.context.request.headers.get("X-Forwarded-For", "127.0.0.1").split(",")[0].strip()
@@ -71,12 +71,12 @@ def get_device_id():
     except:
         ua = ""
 
-    # 混合生成唯一指纹
-    fingerprint = f"{st.session_state.device_fingerprint}-{ip}-{ua}"
+    # 混合生成指纹，但以 session 中的 UUID 为主
+    fingerprint = f"{st.session_state.unique_device_id}-{ip}"
     return hashlib.md5(fingerprint.encode()).hexdigest()
 
 # ✅ 每次都从文件检查是否已提交（关键！）
-def is_device_submitted(device_id):
+def has_device_submitted(device_id):
     if not os.path.exists(SCORES_FILE):
         return False
     df = load_scores()
@@ -92,18 +92,14 @@ def is_device_submitted(device_id):
 def main():
     st.title("🎙️ 技术党支部朗诵活动打分表（匿名在线评分）")
 
-    # ✅ 每次加载都重新生成 device_id（但 session 中持久化 fingerprint）
+    # ✅ 每次加载都获取设备ID（但基于 session_state 持久化）
     device_id = get_device_id()
 
     # ✅ 每次加载都从文件检查是否已提交（不依赖 session_state）
-    has_submitted = is_device_submitted(device_id)
-
-    # ✅ 如果已提交，直接显示提示，不再渲染表单
-    if has_submitted:
+    if has_device_submitted(device_id):
         st.success("✅ 感谢您的评分！您已成功提交，每个设备仅可提交一次。")
-        # 仍允许查看管理面板
         show_publisher_panel()
-        return
+        return  # ✅ 提交后直接返回，不渲染表单
 
     # ✅ 否则显示打分表单
     show_scoring_form(device_id)
@@ -119,11 +115,9 @@ def show_scoring_form(device_id):
     for category, max_score in weights.items():
         st.markdown(f"- **{category}**：满分 {max_score} 分")
 
-    # 生成唯一表单 key（避免缓存）
-    form_key = f"scoring_form_{device_id[:8]}"
-
-    new_scores = []
-    with st.form(key=form_key):
+    # 使用 device_id 作为表单 key，避免缓存
+    with st.form(key=f"scoring_form_{device_id[:8]}"):
+        new_scores = []
         for participant in participants:
             with st.expander(f"🎤 {participant['姓名']} (编号: {participant['编号']})", expanded=True):
                 score_row = {
@@ -148,10 +142,8 @@ def show_scoring_form(device_id):
                 score_row["总分"] = total
                 new_scores.append(score_row)
 
-        submitted = st.form_submit_button("📤 提交所有评分")
-
-        if submitted:
-            # 校验分数范围
+        if st.form_submit_button("📤 提交所有评分"):
+            # 校验范围
             for row in new_scores:
                 for category, max_score in weights.items():
                     if not (0 <= row[category] <= max_score):
@@ -159,7 +151,7 @@ def show_scoring_form(device_id):
                         return
 
             # ✅ 再次检查文件（防并发）
-            if is_device_submitted(device_id):
+            if has_device_submitted(device_id):
                 st.error("⚠️ 您的设备已提交过评分，不可重复提交。")
                 return
 
@@ -169,10 +161,10 @@ def show_scoring_form(device_id):
             all_scores = pd.concat([all_scores, new_df], ignore_index=True)
             save_scores(all_scores)
 
-            # ✅ 重新加载页面，确保下次进入时显示“已提交”
+            # ✅ 提交成功后，立即重新加载页面
             st.success("🎉 感谢您的评分！数据已提交。")
             st.balloons()
-            st.rerun()  # 重新加载，确保下次走 has_submitted 分支
+            st.rerun()  # 重新加载，确保下次进入走“已提交”分支
 
 # -----------------------------
 # 发布者管理面板
