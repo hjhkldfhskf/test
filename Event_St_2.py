@@ -122,6 +122,22 @@ all_scores = load_scores()  # ✅ 现在确保包含 device_id
 
 def main():
     st.title("🎙️ 技术党支部朗诵活动打分表（匿名在线评分）")
+    def get_device_i():
+        try:
+            ip = st.context.request.headers.get("X-Forwarded-For", "127.0.0.1").split(",")[0].strip()
+        except:
+            ip = "127.0.0.1"
+
+        try:
+            user_agent = st.context.request.headers.get("User-Agent", "")
+        except:
+            user_agent = ""
+
+        device_str = f"{ip}-{user_agent}"
+        return ip,user_agent
+    a,b=get_device_i()
+    st.subheader(a,b)
+
 
     # ========== 显示打分状态（顶部提示）==========
     if st.session_state.has_submitted:
