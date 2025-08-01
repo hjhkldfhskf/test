@@ -123,18 +123,15 @@ all_scores = load_scores()  # ✅ 现在确保包含 device_id
 def main():
     st.title("🎙️ 技术党支部朗诵活动打分表（匿名在线评分）")
 
-    # ========== 显示打分状态（顶部提示）==========
+    # 如果设备已提交，直接显示提示
     if st.session_state.has_submitted:
         st.success("✅ 感谢您的评分！您已成功提交，每个设备仅可提交一次。")
+        return
 
-    # ========== 显示打分表单（仅未提交时）==========
-    if not st.session_state.has_submitted:
-        show_scoring_form()
-    else:
-        # ✅ 即使已提交，也继续显示管理面板
-        pass  # 继续执行下面的管理功能
+    # 否则显示打分表单
+    show_scoring_form()
 
-    # ========== 管理区：发布者登录 ==========
+    # 管理区：发布者登录
     st.sidebar.title("🔐 发布者管理")
     pwd = st.sidebar.text_input("请输入发布者密码", type="password")
     
@@ -145,14 +142,16 @@ def main():
         else:
             st.sidebar.error("密码错误")
 
-    # ========== 发布者功能（仅登录后可见）==========
+    # 发布者功能（仅登录后可见）
     if st.session_state.get("publisher_logged_in", False):
         st.sidebar.markdown("---")
         st.sidebar.subheader("🎯 管理功能")
 
-        # 安全获取已提交设备数
+        # ✅ 安全获取已提交设备数
         if "device_id" in all_scores.columns:
-            submitted_devices = all_scores[all_scores["device_id"] != ""]["device_id"].nunique()
+            submitted_devices = all_scores["device_id"].nunique()
+            if "" in all_scores["device_id"].values:
+                submitted_devices -= 1  # 排除空值
         else:
             submitted_devices = 0
 
