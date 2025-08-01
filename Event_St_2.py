@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import os
 import hashlib
-import re
 
 # -----------------------------
 # 配置
@@ -44,8 +43,8 @@ MAX_TOTAL = sum(weights.values())  # 100 分
 # 评分数据文件
 SCORES_FILE = "scores.csv"
 
-# 发布者密码（建议修改为更安全的密码）
-PUBLISHER_PASSWORD = "admin123"  # ← 请修改为你的密码
+# 发布者密码
+PUBLISHER_PASSWORD = "admin123"  # ← 请修改
 
 # -----------------------------
 # 工具函数
@@ -57,12 +56,16 @@ def hash_password(password):
 def load_scores():
     if os.path.exists(SCORES_FILE):
         df = pd.read_csv(SCORES_FILE)
-        # 确保包含 device_id 列
+        # ✅ 确保包含 device_id 列
         if "device_id" not in df.columns:
-            df["device_id"] = ""
+            df["device_id"] = ""  # 新增列，默认为空
         return df
     else:
-        return pd.DataFrame(columns=["评委ID", "device_id", "编号", "姓名"] + list(weights.keys()) + ["总分"])
+        # ✅ 初始化时就包含 device_id
+        return pd.DataFrame(
+            columns=["评委ID", "device_id", "编号", "姓名"] 
+            + list(weights.keys()) + ["总分"]
+        )
 
 def save_scores(df):
     df.to_csv(SCORES_FILE, index=False)
@@ -71,21 +74,18 @@ def clear_scores():
     if os.path.exists(SCORES_FILE):
         os.remove(SCORES_FILE)
 
-# 获取设备指纹（IP + User-Agent 哈希）
+# 获取设备指纹
 def get_device_id():
-    # 获取 IP（Streamlit Cloud 下可能为代理 IP，但同一设备通常一致）
     try:
         ip = st.context.request.headers.get("X-Forwarded-For", "127.0.0.1").split(",")[0].strip()
     except:
         ip = "127.0.0.1"
 
-    # 获取 User-Agent
     try:
         user_agent = st.context.request.headers.get("User-Agent", "")
     except:
         user_agent = ""
 
-    # 组合并哈希
     device_str = f"{ip}-{user_agent}"
     return hashlib.md5(device_str.encode()).hexdigest()
 
@@ -93,7 +93,9 @@ def get_device_id():
 def has_submitted(device_id):
     if os.path.exists(SCORES_FILE):
         df = pd.read_csv(SCORES_FILE)
-        return device_id in df["device_id"].values
+        if "device_id" not in df.columns:
+            return False  # 如果没有该列，认为未提交
+        return device_id in df["device_id"].dropna().values
     return False
 
 # -----------------------------
@@ -107,12 +109,12 @@ device_id = get_device_id()
 if "has_submitted" not in st.session_state:
     st.session_state.has_submitted = has_submitted(device_id)
 
-# 生成评委ID（仅用于内部记录，不用于识别）
+# 生成评委ID
 if "judge_id" not in st.session_state:
     st.session_state.judge_id = f"J{len(load_scores()['评委ID'].unique()) + 1:03d}"
 
 # 加载评分数据
-all_scores = load_scores()
+all_scores = load_scores()  # ✅ 现在确保包含 device_id
 
 # -----------------------------
 # 页面主函数
@@ -145,8 +147,14 @@ def main():
         st.sidebar.markdown("---")
         st.sidebar.subheader("🎯 管理功能")
 
-        # 显示统计
-        submitted_devices = all_scores["device_id"].nunique() if "device_id" in all_scores.columns else 0
+        # ✅ 安全获取已提交设备数
+        if "device_id" in all_scores.columns:
+            submitted_devices = all_scores["device_id"].nunique()
+            if "" in all_scores["device_id"].values:
+                submitted_devices -= 1  # 排除空值
+        else:
+            submitted_devices = 0
+
         st.sidebar.write(f"✅ 已收到 {submitted_devices} 份评分")
         st.sidebar.write(f"🎯 共 {len(participants)} 位参赛者")
 
@@ -178,7 +186,7 @@ def show_scoring_form():
             with st.expander(f"🎤 {participant['姓名']} (编号: {participant['编号']})", expanded=True):
                 score_row = {
                     "评委ID": st.session_state.judge_id,
-                    "device_id": device_id,  # 记录设备ID
+                    "device_id": device_id,  # ✅ 记录设备ID
                     "编号": participant["编号"],
                     "姓名": participant["姓名"],
                 }
@@ -212,7 +220,7 @@ def show_scoring_form():
                         st.error(f"❌ {category} 分数超出范围（应为 0~{max_score}）")
                         return
 
-            # 再次检查是否已提交（防止并发）
+            # 再次检查是否已提交
             if has_submitted(device_id):
                 st.error("⚠️ 您的设备已提交过评分，不可重复提交。")
                 st.session_state.has_submitted = True
@@ -224,7 +232,6 @@ def show_scoring_form():
             all_scores = pd.concat([all_scores, new_df], ignore_index=True)
             save_scores(all_scores)
 
-            # 标记已提交
             st.session_state.has_submitted = True
             st.success("🎉 感谢您的评分！数据已提交。每个设备仅可提交一次。")
 
@@ -240,8 +247,18 @@ def display_final_scores_publisher():
         st.sidebar.info("📭 暂无评分数据")
         return
 
-    # 计算平均分（基于总分）
-    final_scores = all_scores.groupby(["编号", "姓名"])["总分"].agg(
+    # ✅ 安全处理 device_id 列
+    if "device_id" in all_scores.columns:
+        score_df = all_scores[all_scores["device_id"] != ""]  # 过滤空值
+    else:
+        score_df = all_scores
+
+    if score_df.empty or score_df["总分"].sum() == 0:
+        st.sidebar.info("📭 暂无有效评分数据")
+        return
+
+    # 计算平均分
+    final_scores = score_df.groupby(["编号", "姓名"])["总分"].agg(
         平均分=("mean"),
         评委人数=("count"),
         最高分=("max"),
@@ -255,7 +272,7 @@ def display_final_scores_publisher():
     st.sidebar.bar_chart(final_scores.set_index("姓名")["平均分"])
 
     # 导出数据
-    csv = all_scores.to_csv(index=False)
+    csv = score_df.to_csv(index=False)
     st.sidebar.download_button(
         "💾 导出原始评分数据 (CSV)",
         csv,
