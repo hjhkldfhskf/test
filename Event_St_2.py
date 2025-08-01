@@ -5,7 +5,7 @@ import hashlib
 import uuid
 
 # -----------------------------
-# 配置区（同前）
+# 配置区
 # -----------------------------
 
 participants = [
@@ -55,9 +55,8 @@ def clear_scores():
     if os.path.exists(SCORES_FILE):
         os.remove(SCORES_FILE)
 
-# ✅ 改进的设备ID生成：使用 session_id + IP + User-Agent 混合
+# ✅ 改进的设备ID生成（更稳定）
 def get_device_id():
-    # 尝试获取真实IP
     try:
         xff = st.context.request.headers.get("X-Forwarded-For", "")
         ip = xff.split(",")[0].strip() if xff else "127.0.0.1"
@@ -69,19 +68,15 @@ def get_device_id():
     except:
         ua = ""
 
-    # 使用 Streamlit 的 session_id（每个浏览器唯一）
-    try:
-        session_id = st.session_state.get("session_id", str(uuid.uuid4()))
-        if "session_id" not in st.session_state:
-            st.session_state.session_id = session_id
-    except:
-        session_id = str(uuid.uuid4())
+    # 使用 session_id 确保每个浏览器唯一
+    if "session_id" not in st.session_state:
+        st.session_state.session_id = str(uuid.uuid4())
+    session_id = st.session_state.session_id
 
-    # 混合生成设备指纹
     device_str = f"{session_id}-{ip}-{ua}"
     return hashlib.md5(device_str.encode()).hexdigest()
 
-# ✅ 检查设备是否已提交
+# ✅ 检查设备是否已提交（每次调用都读文件）
 def has_submitted(device_id):
     if not device_id or not os.path.exists(SCORES_FILE):
         return False
@@ -92,18 +87,22 @@ def has_submitted(device_id):
     return device_id in submitted_ids.values
 
 # -----------------------------
-# 初始化状态
+# 初始化状态（关键：每次加载都检查文件）
 # -----------------------------
 
-# ✅ 每个浏览器会话生成唯一 device_id
+# 获取设备ID
 if "device_id" not in st.session_state:
     st.session_state.device_id = get_device_id()
 
 device_id = st.session_state.device_id
 
-# 检查是否已提交
+# ✅ 每次页面加载都重新检查是否已提交（防 session_state 失效）
 if "has_submitted" not in st.session_state:
     st.session_state.has_submitted = has_submitted(device_id)
+else:
+    # 如果 session_state 认为未提交，但文件中已有记录，则同步状态
+    if not st.session_state.has_submitted and has_submitted(device_id):
+        st.session_state.has_submitted = True
 
 # 评委ID
 if "judge_id" not in st.session_state:
@@ -120,48 +119,20 @@ all_scores = load_scores()
 def main():
     st.title("🎙️ 技术党支部朗诵活动打分表（匿名在线评分）")
 
-    # ✅ 重新检查是否已提交（防止 session_state 和文件不一致）
-    if "has_submitted" in st.session_state and not st.session_state.has_submitted:
-        # 再次校验
-        if has_submitted(device_id):
-            st.session_state.has_submitted = True
+    # ✅ 每次加载都检查：如果文件中已提交，则强制锁定
+    if has_submitted(device_id):
+        st.session_state.has_submitted = True
 
-    # 显示提交提示
+    # 显示提交状态
     if st.session_state.has_submitted:
         st.success("✅ 感谢您的评分！您已成功提交，每个设备仅可提交一次。")
-    else:
-        show_scoring_form()
+        # ✅ 提交后直接返回，不再显示打分表单
+        show_publisher_panel()  # 仍显示管理面板
+        return
 
-    # ========== 发布者管理 ==========
-    st.sidebar.title("🔐 发布者管理")
-    pwd = st.sidebar.text_input("请输入发布者密码", type="password")
-    
-    if st.sidebar.button("登录"):
-        if hash_password(pwd) == hash_password(PUBLISHER_PASSWORD):
-            st.session_state.publisher_logged_in = True
-            st.sidebar.success("登录成功！")
-        else:
-            st.sidebar.error("密码错误")
-
-    if st.session_state.get("publisher_logged_in", False):
-        st.sidebar.markdown("---")
-        st.sidebar.subheader("🎯 管理功能")
-
-        valid_scores = all_scores[all_scores["device_id"].notna() & (all_scores["device_id"] != "")]
-        submitted_count = valid_scores["device_id"].nunique()
-
-        st.sidebar.write(f"✅ 已收到 {submitted_count} 份评分")
-        st.sidebar.write(f"🎯 共 {len(participants)} 位参赛者")
-
-        if st.sidebar.button("🗑️ 一键清除所有评分"):
-            clear_scores()
-            for key in list(st.session_state.keys()):
-                del st.session_state[key]
-            st.cache_data.clear()
-            st.sidebar.success("✅ 所有评分已清除")
-            st.rerun()
-
-        display_final_scores_publisher()
+    # 否则显示打分表单
+    show_scoring_form()
+    show_publisher_panel()
 
 # -----------------------------
 # 打分表单
@@ -198,24 +169,63 @@ def show_scoring_form():
                 new_scores.append(score_row)
 
         if st.form_submit_button("📤 提交评分"):
-            # 校验
+            # 校验范围
             for row in new_scores:
                 for cat, max_score in weights.items():
                     if not 0 <= row[cat] <= max_score:
-                        st.error(f"❌ {cat} 超出范围")
+                        st.error(f"❌ {cat} 超出范围（0~{max_score}）")
                         return
+
+            # ✅ 再次检查文件（防并发）
             if has_submitted(device_id):
-                st.error("⚠️ 已提交")
+                st.error("⚠️ 您的设备已提交过评分，不可重复提交。")
                 st.session_state.has_submitted = True
                 return
 
-            # 保存
+            # 保存评分
             new_df = pd.DataFrame(new_scores)
             global all_scores
             all_scores = pd.concat([all_scores, new_df], ignore_index=True)
             save_scores(all_scores)
+
+            # ✅ 标记已提交
             st.session_state.has_submitted = True
-            st.success("🎉 提交成功！")
+            st.success("🎉 感谢您的评分！数据已提交。")
+
+# -----------------------------
+# 发布者管理面板（独立函数）
+# -----------------------------
+
+def show_publisher_panel():
+    st.sidebar.title("🔐 发布者管理")
+    pwd = st.sidebar.text_input("请输入发布者密码", type="password")
+    
+    if st.sidebar.button("登录"):
+        if hash_password(pwd) == hash_password(PUBLISHER_PASSWORD):
+            st.session_state.publisher_logged_in = True
+            st.sidebar.success("登录成功！")
+        else:
+            st.sidebar.error("密码错误")
+
+    if st.session_state.get("publisher_logged_in", False):
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("🎯 管理功能")
+
+        valid = all_scores[all_scores["device_id"].notna() & (all_scores["device_id"] != "")]
+        submitted_count = valid["device_id"].nunique()
+
+        st.sidebar.write(f"✅ 已收到 {submitted_count} 份评分")
+        st.sidebar.write(f"🎯 共 {len(participants)} 位参赛者")
+
+        if st.sidebar.button("🗑️ 一键清除所有评分"):
+            clear_scores()
+            for key in list(st.session_state.keys()):
+                del st.session_state[key]
+            st.cache_data.clear()
+            st.sidebar.success("✅ 所有评分已清除")
+            st.rerun()
+
+        display_final_scores_publisher()
 
 # -----------------------------
 # 发布者查看结果
@@ -225,7 +235,7 @@ def display_final_scores_publisher():
     st.sidebar.subheader("📊 最终得分")
     valid = all_scores[all_scores["device_id"].notna() & (all_scores["device_id"] != "")]
     if valid.empty:
-        st.sidebar.info("📭 暂无数据")
+        st.sidebar.info("📭 暂无评分数据")
         return
     final = valid.groupby(["编号", "姓名"])["总分"].agg(
         平均分=("mean"), 评委人数=("count"), 最高分=("max"), 最低分=("min")
@@ -235,9 +245,9 @@ def display_final_scores_publisher():
     st.sidebar.dataframe(final, use_container_width=True)
     st.sidebar.bar_chart(final.set_index("姓名")["平均分"])
     st.sidebar.download_button(
-        "💾 导出数据",
+        "💾 导出原始数据",
         valid.to_csv(index=False),
-        "评分数据.csv",
+        "朗诵比赛评分数据.csv",
         "text/csv"
     )
 
